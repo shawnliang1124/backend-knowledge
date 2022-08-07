@@ -267,3 +267,90 @@ ps: 参考是 Broker 端参数 [**replica.lag.time.max.ms](http://replica.lag.ti
 ![img.png](../pic/消费者的重平衡过程(Rebalanced).jpg) 
  
 
+### Kafka的控制器组件   
+利用zookeeper作为分布式协调者。
+
+zookeeper作用：
+
+- 存储元数据信息：主题，分区，ISR副本，Broker等信息
+- Watch机制进行通知：让Broker节点感知到zk上节点的变动
+
+良好的设计：**事件总线设计机制**。SOFA里面也有类似的设计。
+
+**PS: KAFKA在2.8.0 已经正式移除了对zk的依赖**  
+
+
+### Kafka企业级别的实时流日志处理平台   
+组件：
+
+- kafka 集群，负责接收消息
+- KafKa connect 负责收集对应目录下的业务日志，并且推送给kafka
+- kafka stream 负责解析broker发过来的消息
+
+kafka stream api的使用
+
+```
+引入依赖： 
+<dependency>
+    <groupId>org.apache.kafka</groupId>
+    <artifactId>kafka-streams</artifactId>
+    <version>2.3.0</version>
+</dependency>
+```
+
+kafka stream api去消费   
+```java
+ public static void main(String[] args) {
+ 
+ 
+        Properties props = new Properties();
+        props.put(StreamsConfig.APPLICATION_ID_CONFIG, "os-check-streams");
+        props.put(StreamsConfig.BOOTSTRAP_SERVERS_CONFIG, "localhost:9092");
+        props.put(StreamsConfig.DEFAULT_KEY_SERDE_CLASS_CONFIG, Serdes.String().getClass());
+        props.put(StreamsConfig.DEFAULT_VALUE_SERDE_CLASS_CONFIG, Serdes.String().getClass());
+        props.put(StreamsConfig.DEFAULT_WINDOWED_KEY_SERDE_INNER_CLASS, Serdes.StringSerde.class.getName());
+ 
+        final Gson gson = new Gson();
+        final StreamsBuilder builder = new StreamsBuilder();
+ 
+        KStream<String, String> source = builder.stream("access_log");
+        source.mapValues(value -> gson.fromJson(value, LogLine.class)).mapValues(LogLine::getPayload)
+                .groupBy((key, value) -> value.contains("ios") ? "ios" : "android")
+                .windowedBy(TimeWindows.of(Duration.ofSeconds(2L)))
+                .count()
+                .toStream()
+                .to("os-check", Produced.with(WindowedSerdes.timeWindowedSerdeFrom(String.class), Serdes.Long()));
+ 
+        final Topology topology = builder.build();
+ 
+        final KafkaStreams streams = new KafkaStreams(topology, props);
+        final CountDownLatch latch = new CountDownLatch(1);
+ 
+        Runtime.getRuntime().addShutdownHook(new Thread("streams-shutdown-hook") {
+            @Override
+            public void run() {
+                streams.close();
+                latch.countDown();
+            }
+        });
+ 
+        try {
+            streams.start();
+            latch.await();
+        } catch (Exception e) {
+            System.exit(1);
+        }
+        System.exit(0);
+    }
+}
+ 
+ 
+class LogLine {
+    private String payload;
+    private Object schema;
+ 
+    public String getPayload() {
+        return payload;
+    }
+}
+```
